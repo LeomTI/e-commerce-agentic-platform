@@ -1,27 +1,38 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+import time
+from contextlib import asynccontextmanager
+from fastapi import FastAPI,Depends
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
+from .database import Base,engine,get_db
+from .models import Product
+from .schemas import ProductCreate
 
-app=FastAPI(title="TerraSip MVP")
-PRODUCTS=[]
+@asynccontextmanager
+async def lifespan(app):
+    for _ in range(30):
+        try:
+            Base.metadata.create_all(bind=engine)
+            break
+        except OperationalError:
+            time.sleep(2)
+    yield
 
-class Product(BaseModel):
-    name:str
-    stock:int
+app=FastAPI(title="TerraSip MVP v2 Fixed", lifespan=lifespan)
 
 @app.get("/health")
-def health():
-    return {"status":"healthy"}
+def health(): return {"status":"healthy"}
+
+@app.post("/products")
+def create_product(product:ProductCreate, db:Session=Depends(get_db)):
+    p=Product(name=product.name, stock=product.stock)
+    db.add(p); db.commit(); db.refresh(p)
+    return {"id":p.id,"name":p.name,"stock":p.stock}
 
 @app.get('/products')
-def get_products():
-    return PRODUCTS
-
-@app.post('/products')
-def create_product(product:Product):
-    PRODUCTS.append(product.model_dump())
-    return product
+def products(db:Session=Depends(get_db)):
+    return db.query(Product).all()
 
 @app.get('/inventory/check')
-def inventory_check():
-    alerts=[p for p in PRODUCTS if p['stock']<20]
-    return {"alerts":alerts,"agent":"InventoryAgent"}
+def inventory_check(db:Session=Depends(get_db)):
+    low=db.query(Product).filter(Product.stock<20).all()
+    return {"agent":"InventoryAgent","alerts":[{"id":x.id,"name":x.name,"stock":x.stock} for x in low]}
